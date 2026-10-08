@@ -1128,7 +1128,7 @@
   function pageCases() {
     const page = h("div", { class: "page prose" });
     page.append(h("div", { class: "lesson-head" }, h("div", { class: "eyebrow" }, "Credit analytics"), h("h1", {}, "Case drills"),
-      h("p", { class: "summary" }, "Business questions on the lending data: structure first, then evidence, then a recommendation. About 30 minutes each.")));
+      h("p", { class: "summary" }, "Business questions on the lending data: structure first, then evidence, then a recommendation. About 30 minutes each. The live rounds have no SQL, so treat each query as the data you'd ask the interviewer for, and practise saying the numbers out loud. For pure pen-and-paper practice, use Paper cases.")));
     const t = h("table", { class: "plist" });
     COURSE.cases.forEach((c, i) => {
       const started = answerItems(c).some((b) => Store.item(b.id).text || Store.item(b.id).draft);
