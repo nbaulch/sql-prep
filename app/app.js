@@ -508,7 +508,8 @@
         r.showError(e);
         feedback.className = "feedback bad";
         feedback.innerHTML = "<strong>Your query didn't run.</strong> Read the error under the editor: DuckDB usually names the column or the word it choked on.";
-        Store.update(item.id, { attempts: Store.item(item.id).attempts + 1, status: Store.solved(item.id) ? "solved" : "attempted" });
+        Store.update(item.id, { attempts: Store.item(item.id).attempts + 1, status: Store.solved(item.id) ? "solved" : "attempted",
+          lastResult: "query error: " + String(e.message || e).split("\n")[0] });
         return;
       }
       const want = await expectedFor(item);
@@ -518,6 +519,7 @@
         attempts: Store.item(item.id).attempts + 1,
         status: cmp.ok || wasSolved ? "solved" : "attempted",
         solvedAt: cmp.ok && !wasSolved ? new Date().toISOString() : Store.item(item.id).solvedAt,
+        lastResult: cmp.ok ? "correct" : cmp.title,
       });
       renderFeedback(cmp);
       if (cmp.ok) {
@@ -736,6 +738,77 @@
       next ? h("a", { class: "btn btn-primary", href: `#/drill/${next.id}` }, next.title, " →")
         : h("a", { class: "btn btn-primary", href: "#/problems" }, "Problem bank →")));
     return page;
+  }
+
+  /* Daily sets: five drills, then a plain-text summary to send for review. */
+  const latestDaily = () => COURSE.daily[COURSE.daily.length - 1];
+
+  function pageDaily(id) {
+    const set = id ? COURSE.daily.find((d) => d.id === id) : latestDaily();
+    if (!set) return notFound();
+    const items = lessonItems(set);
+    const solved = items.filter((b) => Store.solved(b.id)).length;
+    const page = h("div", { class: "page" });
+    const body = h("div", { class: "prose" });
+    page.append(h("div", { class: "lesson-head" },
+      h("div", { class: "eyebrow" }, `Daily set · ${set.date || set.id} · ${solved}/${items.length} solved`),
+      h("h1", {}, set.title),
+      set.summary ? h("p", { class: "summary" }, set.summary) : null));
+    const cards = [];
+    for (const b of set.blocks) {
+      if (b.type === "md") body.append(...md(b.text).childNodes);
+      else if (b.type === "exercise") {
+        const c = exerciseCard(b, { heading: `Drill ${cards.length + 1}` });
+        cards.push({ item: b, card: c });
+        body.append(c.el);
+      } else if (b.type === "predict") body.append(predictCard(b));
+      else body.append(callout(b.type, b.title, b.text));
+    }
+    page.append(body);
+
+    const out = h("textarea", { class: "daily-out", readonly: true, rows: 12, placeholder: "Your results appear here." });
+    const copyBtn = h("button", {
+      class: "btn btn-primary",
+      onclick: async () => {
+        out.value = dailySummary(set, cards);
+        out.style.display = "block";
+        try {
+          await navigator.clipboard.writeText(out.value);
+          toast("Copied: paste it into a message to Claude");
+        } catch (e) {
+          out.focus();
+          out.select();
+          toast("Select the text below and copy it");
+        }
+      },
+    }, "Copy results");
+    page.append(h("div", { class: "callout note" },
+      h("div", { class: "callout-title" }, "Done? Send it for review"),
+      h("div", { class: "callout-body" },
+        h("p", {}, "Check each drill first (unsolved ones are fine: send your best attempt). Then copy the results and send them, or a photo of them."),
+        h("p", {}, copyBtn), out)));
+
+    const others = COURSE.daily.filter((d) => d !== set).reverse();
+    if (others.length) {
+      page.append(h("div", { class: "small muted", style: "margin-top:24px" }, "Earlier sets: ",
+        ...others.flatMap((d, i) => [i ? " · " : "", h("a", { href: `#/daily/${d.id}` }, `${d.title} (${d.date || d.id})`)])));
+    }
+    return page;
+  }
+
+  function dailySummary(set, cards) {
+    const lines = [`DAILY SET ${set.id}: ${set.title}`, `Copied ${new Date().toLocaleString()}`, ""];
+    cards.forEach(({ item, card }, i) => {
+      const st = Store.item(item.id);
+      const sql = card.getSql().trim();
+      lines.push(
+        `[${i + 1}] ${item.id}: ${st.status === "solved" ? "SOLVED" : st.status === "attempted" ? "NOT SOLVED" : "NOT ATTEMPTED"}` +
+        ` · ${st.attempts} check${st.attempts === 1 ? "" : "s"} · ${st.hints} hint${st.hints === 1 ? "" : "s"}` +
+        (st.revealed ? " · solution revealed" : ""),
+        `Last check: ${st.lastResult || "never checked"}`,
+        "```sql", sql || "-- (empty)", "```", "");
+    });
+    return lines.join("\n");
   }
 
   function pageProblems() {
@@ -1026,6 +1099,11 @@
         return link(`#/drill/${d.id}`, d.title, h("span", { class: done === items.length ? "nav-check" : "nav-meta" }, done === items.length ? "✓" : `${done}/${items.length}`));
       })),
       sec("Practice",
+        latestDaily() ? link("#/daily", "Daily set", (() => {
+          const items = lessonItems(latestDaily());
+          const done = items.filter((b) => Store.solved(b.id)).length;
+          return h("span", { class: done === items.length ? "nav-check" : "nav-meta" }, done === items.length ? "✓" : `${done}/${items.length}`);
+        })()) : null,
         link("#/problems", "Problem bank", h("span", { class: "nav-meta" }, `${solvedP}/${COURSE.problems.length}`)),
         link("#/mock", Store.state.activeMock ? "Mock screen (in progress)" : "Mock screen")),
       sec("Reference", ...refs.map((r) => link(`#/ref/${r.id}`, r.title))),
@@ -1070,6 +1148,7 @@
     if (!kind) page = pageHome();
     else if (kind === "lesson") page = pageLesson(id);
     else if (kind === "drill") page = pageDrill(id);
+    else if (kind === "daily") page = pageDaily(id);
     else if (kind === "problems") page = pageProblems();
     else if (kind === "problem") page = pageProblem(id);
     else if (kind === "mock") page = pageMock();
@@ -1083,7 +1162,7 @@
   }
 
   function boot() {
-    if (COURSE) COURSE.drills ||= [];
+    if (COURSE) { COURSE.drills ||= []; COURSE.daily ||= []; }
     if (!COURSE || !window.COURSE_DATA) {
       document.body.innerHTML = "<p style='padding:2em'>Course files are missing (app/content.js, app/data.js).</p>";
       return;
