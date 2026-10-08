@@ -697,6 +697,18 @@
       pointRadius: b.chart === "bar" ? 0 : 2, borderWidth: 2, tension: 0.15,
     }));
     const muted = cssVar("--muted"), grid = cssVar("--border");
+    // Category axes with few labels: show every label, wrapped onto short lines, so bars never lose their names on a phone.
+    const categorical = b.chart === "bar" && labels.length <= 24;
+    const wrapLabel = (l) => {
+      const words = String(l).split(" "), lines = [];
+      for (const w of words) {
+        const last = lines[lines.length - 1];
+        if (last && (last + " " + w).length <= 10) lines[lines.length - 1] = last + " " + w;
+        else lines.push(w);
+      }
+      return lines.length > 1 ? lines : lines[0];
+    };
+    if (categorical) labels = labels.map((l) => (typeof l === "string" ? wrapLabel(l) : l));
     const fmt = (v) => (v == null ? "–" : b.percent
       ? (v * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0) + "%"
       : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("en-US") : String(Math.round(v * 100) / 100));
@@ -707,10 +719,10 @@
         responsive: true, maintainAspectRatio: false, animation: false,
         plugins: {
           legend: { display: datasets.length > 1, labels: { color: muted, boxWidth: 12 } },
-          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y)}` } },
+          tooltip: { callbacks: { title: (items) => (items.length ? [].concat(items[0].chart.data.labels[items[0].dataIndex]).join(" ") : ""), label: (ctx) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y)}` } },
         },
         scales: {
-          x: { stacked: !!b.stacked, ticks: { color: muted, maxRotation: 0, autoSkipPadding: 12 }, grid: { color: grid } },
+          x: { stacked: !!b.stacked, ticks: categorical ? { color: muted, maxRotation: labels.length > 6 ? 60 : 0, autoSkip: false, font: { size: 11 } } : { color: muted, maxRotation: 0, autoSkipPadding: 12 }, grid: { color: grid } },
           y: { stacked: !!b.stacked, beginAtZero: true, ticks: { color: muted, callback: (v) => fmt(v) }, grid: { color: grid } },
         },
       },
