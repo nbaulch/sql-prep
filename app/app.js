@@ -455,12 +455,12 @@
 
   /* Interactive exercise (lesson) or problem (bank / mock).
    * mode: "learn" (hints + solution available) or "mock" (no feedback). */
-  function exerciseCard(item, { mode = "learn", onSolved, heading } = {}) {
+  function exerciseCard(item, { mode = "learn", onSolved, heading, hideId = false } = {}) {
     const st = mode === "mock" ? { status: "new" } : Store.item(item.id);
     const card = h("div", { class: "card" + (st.status === "solved" ? " solved" : "") });
     const badge = h("span", { class: "badge " + (st.status === "solved" ? "done" : item.kind) },
       st.status === "solved" ? "Solved" : KIND_LABEL[item.kind] || "Write");
-    const head = h("div", { class: "card-head" }, badge, heading ? h("strong", {}, heading) : null, h("span", { class: "card-id" }, item.id));
+    const head = h("div", { class: "card-head" }, badge, heading ? h("strong", {}, heading) : null, hideId ? null : h("span", { class: "card-id" }, item.id));
     const body = h("div", { class: "card-body" });
     const feedback = h("div", { class: "feedback" });
     const hintsBox = h("div");
@@ -758,7 +758,7 @@
     for (const b of set.blocks) {
       if (b.type === "md") body.append(...md(b.text).childNodes);
       else if (b.type === "exercise") {
-        const c = exerciseCard(b, { heading: `Drill ${cards.length + 1}` });
+        const c = exerciseCard(b, { heading: `Drill ${cards.length + 1}`, hideId: true });
         cards.push({ item: b, card: c });
         body.append(c.el);
       } else if (b.type === "predict") body.append(predictCard(b));
