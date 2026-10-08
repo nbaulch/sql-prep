@@ -686,15 +686,19 @@
       const groups = [...new Set(res.rows.map((r) => r[si]))];
       datasets = groups.map((g) => {
         const m = new Map(res.rows.filter((r) => r[si] === g).map((r) => [r[xi], r[yi]]));
-        return { label: String(g), data: labels.map((l) => (m.has(l) ? m.get(l) : null)) };
+        return { label: String(g).replace(/_/g, " "), data: labels.map((l) => (m.has(l) ? m.get(l) : null)) };
       });
     } else {
       labels = res.rows.map((r) => r[xi]);
-      datasets = b.y.map((y) => ({ label: y, data: res.rows.map((r) => r[col(y)]) }));
+      const pretty = (y) => y.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+      datasets = b.y.map((y, k) => ({ label: (b.names && b.names[k]) || pretty(y), data: res.rows.map((r) => r[col(y)]) }));
     }
+    // More series than palette colours (e.g. vintages): spread hues evenly in order, oldest to newest, so no two lines share a colour.
+    const colourOf = (k) => datasets.length <= palette.length ? palette[k]
+      : `hsl(${Math.round(210 + (300 * k) / (datasets.length - 1)) % 360} 65% 55%)`;
     datasets.forEach((d, k) => Object.assign(d, {
-      borderColor: palette[k % palette.length], backgroundColor: palette[k % palette.length],
-      pointRadius: b.chart === "bar" ? 0 : 2, borderWidth: 2, tension: 0.15,
+      borderColor: colourOf(k), backgroundColor: colourOf(k),
+      pointRadius: b.chart === "bar" || labels.length > 40 ? 0 : 2, borderWidth: 2, tension: 0.15,
     }));
     const muted = cssVar("--muted"), grid = cssVar("--border");
     // Category axes with few labels: show every label, wrapped onto short lines, so bars never lose their names on a phone.
