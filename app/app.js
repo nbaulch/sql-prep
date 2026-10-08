@@ -455,7 +455,8 @@
 
   /* Interactive exercise (lesson) or problem (bank / mock).
    * mode: "learn" (hints + solution available) or "mock" (no feedback). */
-  function exerciseCard(item, { mode = "learn", onSolved, heading, hideId = false } = {}) {
+  /* bare: interview-style card with Check but no hints, no solution, no reveal. */
+  function exerciseCard(item, { mode = "learn", onSolved, heading, hideId = false, bare = false } = {}) {
     const st = mode === "mock" ? { status: "new" } : Store.item(item.id);
     const card = h("div", { class: "card" + (st.status === "solved" ? " solved" : "") });
     const badge = h("span", { class: "badge " + (st.status === "solved" ? "done" : item.kind) },
@@ -490,7 +491,7 @@
       sql: draft,
       onCheck: mode === "mock" ? null : (sql) => check(sql),
       onChange: mode === "mock" ? null : (v) => { clearTimeout(saveT); saveT = setTimeout(() => Store.update(item.id, { draft: v }), 400); },
-      extraButtons: mode === "mock" ? [] : [hintBtn, solBtn],
+      extraButtons: mode === "mock" || bare ? [] : [hintBtn, solBtn],
     });
     // the Reset button restores the starter, not the saved draft
     $(".runner-bar .btn-ghost:last-child", r.el).onclick = () => r.cm.setValue(item.starter || "");
@@ -526,7 +527,7 @@
         card.classList.add("solved");
         badge.className = "badge done";
         badge.textContent = "Solved";
-        reveal(false);
+        if (!bare) reveal(false);
         if (onSolved) onSolved();
         refreshNav();
       }
@@ -536,7 +537,7 @@
       feedback.replaceChildren();
       if (cmp.ok) {
         feedback.className = "feedback good";
-        feedback.append(h("strong", {}, "Correct."), " Compare your query with the reference solution below.");
+        feedback.append(h("strong", {}, "Correct."), bare ? "" : " Compare your query with the reference solution below.");
         for (const n of cmp.notes || []) feedback.append(h("div", { class: "small", html: n }));
         return;
       }
@@ -578,7 +579,7 @@
       }
     }
 
-    if (st.status === "solved" && mode === "learn") reveal(false);
+    if (st.status === "solved" && mode === "learn" && !bare) reveal(false);
     return { el: card, cm: r.cm, getSql: () => r.cm.getValue() };
   }
 
@@ -758,7 +759,7 @@
     for (const b of set.blocks) {
       if (b.type === "md") body.append(...md(b.text).childNodes);
       else if (b.type === "exercise") {
-        const c = exerciseCard(b, { heading: `Drill ${cards.length + 1}`, hideId: true });
+        const c = exerciseCard(b, { heading: `${set.interview ? "Question" : "Drill"} ${cards.length + 1}`, hideId: true, bare: !!set.interview });
         cards.push({ item: b, card: c });
         body.append(c.el);
       } else if (b.type === "predict") body.append(predictCard(b));
