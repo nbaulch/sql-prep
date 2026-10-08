@@ -182,6 +182,8 @@ pre.static {
 .callout.pitfall > .callout-title { color: var(--warn); }
 .callout.interview { background: var(--interview-soft); border-color: transparent; }
 .callout.interview > .callout-title { color: var(--interview); }
+.callout.bridge { background: var(--good-soft); border-color: transparent; }
+.callout.bridge > .callout-title { color: var(--good); }
 .callout.note > .callout-title { color: var(--accent); }
 .callout.dialect { background: var(--surface-2); border-color: transparent; }
 .callout.dialect > .callout-title { color: var(--muted); }
@@ -359,3 +361,29 @@ details.clarify summary { cursor: pointer; font-weight: 600; color: var(--interv
   font: 12.5px/1.5 var(--mono); color: var(--text); background: var(--code-bg);
   border: 1px solid var(--border); border-radius: 8px; padding: 10px; resize: vertical;
 }
+
+/* ---------- credit track ---------- */
+.chart-card { margin: 20px 0; padding: 14px 16px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.chart-title { font-weight: 700; margin-bottom: 8px; }
+.chart-canvas { position: relative; height: 280px; }
+.chart-card figcaption { color: var(--muted); font-size: 15px; margin-top: 8px; }
+.chart-card figcaption p { margin: 4px 0; }
+.chart-query { margin-top: 8px; font-size: 14px; }
+.chart-query summary { cursor: pointer; color: var(--accent); }
+.explain-input {
+  width: 100%; box-sizing: border-box; min-height: 110px; margin-top: 6px; padding: 10px;
+  font: 16px/1.5 var(--sans); color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; resize: vertical;
+}
+.explain-input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.badge.explain { background: var(--interview-soft); color: var(--interview); }
+.badge.scratch { background: var(--r-soft); color: var(--r); }
+.cards-block { margin: 28px 0 12px; padding: 14px 16px; border: 1px dashed var(--border); border-radius: 10px; background: var(--surface-2); }
+.cards-title { font-weight: 700; margin-bottom: 2px; }
+.flashcard { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; padding: 8px 12px; }
+.flashcard summary { cursor: pointer; font-weight: 600; }
+.flashcard-a { margin-top: 8px; color: var(--text); }
+.flashcard-a p { margin: 4px 0; }
+.review-card .review-q { font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+.review-card .flashcard-a { margin: 12px 0; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; }
+.nav-due { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent-ink); background: var(--accent); border-radius: 10px; padding: 1px 7px; }

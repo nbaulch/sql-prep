@@ -8,7 +8,7 @@
   "use strict";
 
   const DUCKDB_URL = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
-  const TABLES = ["merchants", "borrowers", "applications", "loans", "installments", "payments"];
+  const TABLES = ["merchants", "borrowers", "applications", "loans", "installments", "payments", "loan_month", "merchant_terms"];
   const STORE_KEY = "sqlprep.v1";
   const MAX_ROWS_SHOWN = 200;
   const COURSE = window.COURSE;
@@ -426,7 +426,7 @@
   }
 
   function callout(kind, title, text) {
-    const labels = { rlens: "If you know dplyr", pitfall: "Pitfall", note: "Note", interview: "In the interview", dialect: "Dialect check" };
+    const labels = { rlens: "If you know dplyr", pitfall: "Pitfall", note: "Note", interview: "In the interview", dialect: "Dialect check", bridge: "From economics and bank risk" };
     const label = labels[kind] + (title ? ": " + title : "");
     return h("div", { class: "callout " + kind },
       h("div", { class: "callout-title" }, label),
@@ -590,11 +590,13 @@
     card.append(h("div", { class: "card-head" }, badge, h("span", { class: "card-id" }, item.id)));
     const body = h("div", { class: "card-body" });
     body.append(md(item.prompt));
-    const code = h("div", { class: "prose" });
-    code.innerHTML = "<pre><code class='language-sqlstatic'></code></pre>";
-    $("code", code).textContent = item.sql;
-    enhanceCode(code);
-    body.append(code);
+    if (item.sql) {
+      const code = h("div", { class: "prose" });
+      code.innerHTML = "<pre><code class='language-sqlstatic'></code></pre>";
+      $("code", code).textContent = item.sql;
+      enhanceCode(code);
+      body.append(code);
+    }
     const opts = h("div", { class: "options" });
     const after = h("div");
     const answered = st.answer != null;
@@ -618,21 +620,220 @@
       }
       card.classList.add("solved");
       after.replaceChildren(
-        h("div", { class: "feedback " + (right ? "good" : "bad") }, h("strong", {}, right ? "Right." : "Not quite."), " ", "Run the query to see for yourself."),
-        runner({ sql: item.sql }).el,
+        h("div", { class: "feedback " + (right ? "good" : "bad") }, h("strong", {}, right ? "Right." : "Not quite."), item.sql ? " Run the query to see for yourself." : ""),
+        item.sql ? runner({ sql: item.sql }).el : "",
         item.explain ? md(item.explain) : "");
     }
     if (answered) choose(st.answer, true);
     return card;
   }
 
-  function renderBlocks(blocks, container) {
+  /* collect (optional) gathers handles for the "copy my answers" summary. */
+  function renderBlocks(blocks, container, collect) {
     for (const b of blocks) {
       if (b.type === "md") container.append(...md(b.text).childNodes);
-      else if (b.type === "exercise") container.append(exerciseCard(b).el);
-      else if (b.type === "predict") container.append(predictCard(b));
+      else if (b.type === "exercise") {
+        const c = exerciseCard(b);
+        container.append(c.el);
+        if (collect) collect.push({ kind: "exercise", item: b, getText: c.getSql });
+      } else if (b.type === "predict") {
+        container.append(predictCard(b));
+        if (collect) collect.push({ kind: "predict", item: b });
+      } else if (b.type === "chart") container.append(chartBlock(b));
+      else if (b.type === "explain") {
+        const c = explainCard(b);
+        container.append(c.el);
+        if (collect) collect.push({ kind: "explain", item: b, getText: c.getText });
+      } else if (b.type === "scratch") {
+        const c = scratchCard(b);
+        container.append(c.el);
+        if (collect) collect.push({ kind: "scratch", item: b, getText: c.getSql });
+      } else if (b.type === "cards") container.append(cardsBlock(b));
       else container.append(callout(b.type, b.title, b.text));
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* credit track: charts, written answers, scratch pads, flashcards     */
+  /* ------------------------------------------------------------------ */
+
+  const CHART_URL = "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js";
+  let chartLib = null;
+  function loadChartLib() {
+    chartLib ||= new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = CHART_URL;
+      s.onload = () => resolve(window.Chart);
+      s.onerror = () => { chartLib = null; reject(new Error("the chart library didn't load (check your connection)")); };
+      document.head.append(s);
+    });
+    return chartLib;
+  }
+  const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  function chartConfig(b, res) {
+    const col = (name) => {
+      const i = res.cols.indexOf(name);
+      if (i < 0) throw new Error(`the query has no column "${name}"`);
+      return i;
+    };
+    const xi = col(b.x);
+    const palette = ["--accent", "--bad", "--good", "--warn", "--interview", "--r", "--muted"].map(cssVar);
+    let labels, datasets;
+    if (b.series) {
+      const si = col(b.series), yi = col(b.y[0]);
+      labels = [...new Set(res.rows.map((r) => r[xi]))];
+      const groups = [...new Set(res.rows.map((r) => r[si]))];
+      datasets = groups.map((g) => {
+        const m = new Map(res.rows.filter((r) => r[si] === g).map((r) => [r[xi], r[yi]]));
+        return { label: String(g), data: labels.map((l) => (m.has(l) ? m.get(l) : null)) };
+      });
+    } else {
+      labels = res.rows.map((r) => r[xi]);
+      datasets = b.y.map((y) => ({ label: y, data: res.rows.map((r) => r[col(y)]) }));
+    }
+    datasets.forEach((d, k) => Object.assign(d, {
+      borderColor: palette[k % palette.length], backgroundColor: palette[k % palette.length],
+      pointRadius: b.chart === "bar" ? 0 : 2, borderWidth: 2, tension: 0.15,
+    }));
+    const muted = cssVar("--muted"), grid = cssVar("--border");
+    const fmt = (v) => (v == null ? "–" : b.percent
+      ? (v * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0) + "%"
+      : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString("en-US") : String(Math.round(v * 100) / 100));
+    return {
+      type: b.chart === "bar" ? "bar" : "line",
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: datasets.length > 1, labels: { color: muted, boxWidth: 12 } },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y)}` } },
+        },
+        scales: {
+          x: { stacked: !!b.stacked, ticks: { color: muted, maxRotation: 0, autoSkipPadding: 12 }, grid: { color: grid } },
+          y: { stacked: !!b.stacked, beginAtZero: true, ticks: { color: muted, callback: (v) => fmt(v) }, grid: { color: grid } },
+        },
+      },
+    };
+  }
+
+  function chartBlock(b) {
+    const wrap = h("div", { class: "chart-canvas" });
+    const status = h("div", { class: "muted small" }, "Drawing chart…");
+    const fig = h("figure", { class: "chart-card" }, b.title ? h("div", { class: "chart-title" }, b.title) : null, wrap, status);
+    if (b.caption) fig.append(h("figcaption", {}, ...md(b.caption).childNodes));
+    let chart;
+    const draw = async (sql) => {
+      try {
+        const [Chart, res] = await Promise.all([loadChartLib(), DB.run(sql)]);
+        const cfg = chartConfig(b, res);
+        if (chart) chart.destroy();
+        const canvas = h("canvas");
+        wrap.replaceChildren(canvas);
+        chart = new Chart(canvas, cfg);
+        status.textContent = "";
+      } catch (e) {
+        status.textContent = "Couldn't draw the chart: " + (e.message || e);
+      }
+    };
+    const details = h("details", { class: "chart-query" }, h("summary", {}, "See or edit the query behind this chart"));
+    let r;
+    details.addEventListener("toggle", () => {
+      if (!details.open || r) return;
+      r = runner({ sql: b.sql, extraButtons: [h("button", { class: "btn", onclick: () => draw(r.cm.getValue()) }, "Redraw chart")] });
+      details.append(r.el);
+    });
+    fig.append(details);
+    draw(b.sql);
+    return fig;
+  }
+
+  function explainCard(b) {
+    const st = Store.item(b.id);
+    const card = h("div", { class: "card explain-card" + (st.text ? " solved" : "") });
+    const badge = h("span", { class: "badge explain" }, "Explain");
+    card.append(h("div", { class: "card-head" }, badge, h("span", { class: "card-id" }, b.id)));
+    const body = h("div", { class: "card-body" });
+    const ta = h("textarea", { class: "explain-input", rows: 5, placeholder: "Write it the way you'd say it to an interviewer…" });
+    ta.value = st.text || "";
+    const saved = h("span", { class: "meta" });
+    const modelBox = h("div", { class: "reveal" });
+    let t;
+    ta.addEventListener("input", () => {
+      saved.textContent = "";
+      clearTimeout(t);
+      t = setTimeout(() => {
+        Store.update(b.id, { text: ta.value, status: ta.value.trim() ? "solved" : "new" });
+        card.classList.toggle("solved", !!ta.value.trim());
+        saved.textContent = "saved";
+        refreshNav();
+      }, 500);
+    });
+    const showModel = (ask) => {
+      if (modelBox.childElementCount) return;
+      if (ask && ta.value.trim().length < 40 &&
+          !confirm("Write your own answer first? Comparing after you've committed to an answer is what makes it stick.")) return;
+      modelBox.append(h("div", { class: "reveal-title" }, "A strong answer"), md(b.model));
+      Store.update(b.id, { modelShown: true });
+    };
+    const bar = h("div", { class: "runner-bar" },
+      b.model ? h("button", { class: "btn btn-ghost", onclick: () => showModel(true) }, "Compare with a strong answer") : null,
+      h("span", { class: "spacer" }), saved);
+    body.append(md(b.prompt), ta, bar, modelBox);
+    card.append(body);
+    if (st.modelShown && b.model) showModel(false);
+    return { el: card, getText: () => ta.value };
+  }
+
+  function scratchCard(b) {
+    const st = Store.item(b.id);
+    const card = h("div", { class: "card" + (st.draft ? " solved" : "") });
+    card.append(h("div", { class: "card-head" }, h("span", { class: "badge scratch" }, "Your analysis"), h("span", { class: "card-id" }, b.id)));
+    const body = h("div", { class: "card-body" });
+    let t;
+    const r = runner({
+      sql: st.draft != null ? st.draft : b.starter || "-- your query\n",
+      onChange: (v) => {
+        clearTimeout(t);
+        t = setTimeout(() => { Store.update(b.id, { draft: v, status: v.trim() ? "solved" : "new" }); card.classList.add("solved"); }, 400);
+      },
+    });
+    $(".runner-bar .btn-ghost:last-child", r.el).onclick = () => r.cm.setValue(b.starter || "");
+    body.append(md(b.prompt), r.el);
+    card.append(body);
+    return { el: card, getSql: () => r.cm.getValue() };
+  }
+
+  /* Flashcards: shown at the end of a chapter, and scheduled for spaced review. */
+  const REVIEW_DAYS = [1, 3, 7, 14, 30];
+  const localDay = (offset = 0) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const allCards = () => COURSE.credit.flatMap((c, i) => c.blocks.filter((b) => b.type === "cards")
+    .flatMap((b) => b.cards.map((card) => ({ ...card, chapter: c, n: i + 1 }))));
+  function enrolCards(chapter) {
+    const deck = (Store.state.deck ||= {});
+    let added = 0;
+    for (const b of chapter.blocks) if (b.type === "cards") for (const c of b.cards) {
+      if (!deck[c.id]) { deck[c.id] = { box: 0, due: localDay(1) }; added++; }
+    }
+    if (added) Store.save();
+  }
+  const dueCards = () => {
+    const deck = Store.state.deck || {}, today = localDay();
+    return allCards().filter((c) => deck[c.id] && deck[c.id].due <= today);
+  };
+
+  function cardsBlock(b) {
+    const box = h("div", { class: "cards-block" },
+      h("div", { class: "cards-title" }, "Key ideas: test yourself"),
+      h("p", { class: "small muted" }, "Say each answer out loud before you open it. These cards join your review deck and come back on a schedule (1, 3, 7, 14, 30 days)."));
+    for (const c of b.cards) {
+      box.append(h("details", { class: "flashcard" }, h("summary", {}, c.q), h("div", { class: "flashcard-a" }, ...md(c.a).childNodes)));
+    }
+    return box;
   }
 
   /* ------------------------------------------------------------------ */
@@ -640,6 +841,7 @@
   /* ------------------------------------------------------------------ */
 
   const lessonItems = (l) => l.blocks.filter((b) => b.type === "exercise" || b.type === "predict");
+  const answerItems = (l) => l.blocks.filter((b) => ["exercise", "predict", "explain", "scratch"].includes(b.type));
   const lessonDone = (l) => {
     const items = lessonItems(l);
     return Store.state.lessons[l.id] || (items.length > 0 && items.every((b) => Store.solved(b.id)));
@@ -661,6 +863,9 @@
         stat(`${solvedP}/${COURSE.problems.length}`, "problems solved", solvedP / COURSE.problems.length),
         stat(String(Store.state.mocks.length), "mock screens taken")),
       next ? h("p", {}, h("a", { class: "btn btn-primary", href: `#/lesson/${next.id}` }, Store.state.last ? "Continue: " : "Start: ", next.title, " →")) : h("p", {}, h("a", { class: "btn btn-primary", href: "#/mock" }, "Take a mock screen →")),
+      COURSE.credit.length ? h("div", { class: "callout interview" }, h("div", { class: "callout-title" }, "Credit analytics track"),
+        h("div", { class: "callout-body" }, h("p", {}, "Eleven chapters on how a consumer lender makes and loses money, with charts on this data, written exercises, case drills and spaced review. ",
+          h("a", { href: "#/credit" }, "Open the overview →")))) : null,
     );
     const home = COURSE.reference.find((r) => r.id === "00-start-here");
     if (home) renderBlocks(home.blocks, page);
@@ -810,6 +1015,235 @@
         "```sql", sql || "-- (empty)", "```", "");
     });
     return lines.join("\n");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* credit analytics pages                                              */
+  /* ------------------------------------------------------------------ */
+
+  const chapterDone = (c) => !!Store.state.lessons["credit:" + c.id];
+
+  function answersSummary(title, collected) {
+    const lines = [title, `Copied ${new Date().toLocaleString()}`, ""];
+    collected.forEach(({ kind, item, getText }, i) => {
+      const st = Store.item(item.id);
+      if (kind === "predict") {
+        const ans = st.answer != null ? item.options[st.answer] : null;
+        lines.push(`[${i + 1}] ${item.id} (predict): ${ans ? (ans.correct ? "right" : "wrong") + (st.firstTry === false ? ", not first try" : "") : "not answered"}`, "");
+        return;
+      }
+      const text = (getText ? getText() : "").trim();
+      if (kind === "explain") {
+        lines.push(`[${i + 1}] ${item.id} (explain)${st.modelShown ? " · compared with strong answer" : ""}`, text || "(blank)", "");
+      } else if (kind === "scratch") {
+        lines.push(`[${i + 1}] ${item.id} (analysis SQL)`, "```sql", text || "-- (empty)", "```", "");
+      } else {
+        lines.push(`[${i + 1}] ${item.id}: ${st.status === "solved" ? "SOLVED" : st.status === "attempted" ? "NOT SOLVED" : "NOT ATTEMPTED"}` +
+          ` · ${st.attempts || 0} checks · ${st.hints || 0} hints` + (st.revealed ? " · solution revealed" : ""),
+          `Last check: ${st.lastResult || "never checked"}`, "```sql", text || "-- (empty)", "```", "");
+      }
+    });
+    return lines.join("\n");
+  }
+
+  function copyPanel(title, collected, blurb) {
+    const out = h("textarea", { class: "daily-out", readonly: true, rows: 12 });
+    const btn = h("button", {
+      class: "btn btn-primary",
+      onclick: async () => {
+        out.value = answersSummary(title, collected);
+        out.style.display = "block";
+        try { await navigator.clipboard.writeText(out.value); toast("Copied: paste it into a message to Claude"); }
+        catch (e) { out.focus(); out.select(); toast("Select the text below and copy it"); }
+      },
+    }, "Copy my answers");
+    return h("div", { class: "callout note" },
+      h("div", { class: "callout-title" }, "Send it for review"),
+      h("div", { class: "callout-body" }, h("p", {}, blurb), h("p", {}, btn), out));
+  }
+
+  function pageCreditHome() {
+    const page = h("div", { class: "page prose" });
+    const intro = COURSE.prep.find((x) => x.id === "00-credit-start");
+    page.append(h("div", { class: "lesson-head" },
+      h("div", { class: "eyebrow" }, "Credit analytics"),
+      h("h1", {}, intro ? intro.title : "Credit analytics"),
+      intro && intro.summary ? h("p", { class: "summary" }, intro.summary) : null));
+    const done = COURSE.credit.filter(chapterDone).length;
+    const due = dueCards().length;
+    page.append(h("div", { class: "stat-row" },
+      stat(`${done}/${COURSE.credit.length}`, "chapters complete", COURSE.credit.length ? done / COURSE.credit.length : 0),
+      stat(String(due), "cards due for review"),
+      stat(`${COURSE.cases.filter((c) => answerItems(c).some((b) => Store.item(b.id).text || Store.item(b.id).draft)).length}/${COURSE.cases.length}`, "case drills started")));
+    const next = COURSE.credit.find((c) => !chapterDone(c));
+    page.append(h("p", {},
+      due ? h("a", { class: "btn btn-primary", href: "#/review" }, `Review ${due} card${due === 1 ? "" : "s"} first →`) : null, " ",
+      next ? h("a", { class: due ? "btn" : "btn btn-primary", href: `#/credit/${next.id}` }, "Continue: ", next.title, " →") : null));
+    if (intro) renderBlocks(intro.blocks, page);
+    const t = h("table", { class: "plist" });
+    COURSE.credit.forEach((c, i) => t.append(h("tr", {},
+      h("td", { class: "status" }, chapterDone(c) ? "✓" : ""),
+      h("td", {}, h("a", { href: `#/credit/${c.id}` }, `${i + 1}. ${c.title}`)),
+      h("td", { class: "muted small" }, c.part ? `${c.part} · ` : "", `${c.minutes} min`))));
+    page.append(h("h2", {}, "Chapters"), t);
+    return page;
+  }
+
+  function pageChapter(id) {
+    const idx = COURSE.credit.findIndex((c) => c.id === id);
+    const c = COURSE.credit[idx];
+    if (!c) return notFound();
+    Store.state.last = location.hash;
+    enrolCards(c);
+    const page = h("div", { class: "page" });
+    const body = h("div", { class: "prose" });
+    page.append(h("div", { class: "lesson-head" },
+      h("div", { class: "eyebrow" }, `Credit analytics · Chapter ${idx + 1}${c.part ? " · " + c.part : ""} · about ${c.minutes} min`),
+      h("h1", {}, c.title),
+      c.summary ? h("p", { class: "summary" }, c.summary) : null));
+    const collected = [];
+    renderBlocks(c.blocks, body, collected);
+    page.append(body);
+    if (collected.length) page.append(copyPanel(`CHAPTER ${idx + 1}: ${c.title}`, collected,
+      "When you've finished the chapter, copy your answers (SQL, predictions and written answers) and send them. I'll review the reasoning, not just the results."));
+    const prev = COURSE.credit[idx - 1], next = COURSE.credit[idx + 1];
+    const doneBtn = h("button", {
+      class: "btn " + (chapterDone(c) ? "btn-good" : ""),
+      onclick: () => {
+        Store.state.lessons["credit:" + c.id] = !chapterDone(c);
+        Store.save();
+        doneBtn.className = "btn " + (chapterDone(c) ? "btn-good" : "");
+        doneBtn.textContent = chapterDone(c) ? "✓ Chapter complete" : "Mark chapter complete";
+        refreshNav();
+      },
+    }, chapterDone(c) ? "✓ Chapter complete" : "Mark chapter complete");
+    page.append(h("div", { class: "lesson-nav" },
+      prev ? h("a", { class: "btn", href: `#/credit/${prev.id}` }, "← ", prev.title) : h("a", { class: "btn", href: "#/credit" }, "← Overview"),
+      doneBtn,
+      next ? h("a", { class: "btn btn-primary", href: `#/credit/${next.id}` }, next.title, " →")
+        : h("a", { class: "btn btn-primary", href: "#/cases" }, "Case drills →")));
+    return page;
+  }
+
+  function pageCases() {
+    const page = h("div", { class: "page prose" });
+    page.append(h("div", { class: "lesson-head" }, h("div", { class: "eyebrow" }, "Credit analytics"), h("h1", {}, "Case drills"),
+      h("p", { class: "summary" }, "Business questions on the lending data: structure first, then evidence, then a recommendation. About 30 minutes each.")));
+    const t = h("table", { class: "plist" });
+    COURSE.cases.forEach((c, i) => {
+      const started = answerItems(c).some((b) => Store.item(b.id).text || Store.item(b.id).draft);
+      t.append(h("tr", {}, h("td", { class: "status" }, started ? "•" : ""),
+        h("td", {}, h("a", { href: `#/case/${c.id}` }, `${i + 1}. ${c.title}`)),
+        h("td", { class: "muted small" }, c.summary || "")));
+    });
+    page.append(t);
+    return page;
+  }
+
+  function pageCase(id) {
+    const idx = COURSE.cases.findIndex((c) => c.id === id);
+    const c = COURSE.cases[idx];
+    if (!c) return notFound();
+    Store.state.last = location.hash;
+    const page = h("div", { class: "page" });
+    const body = h("div", { class: "prose" });
+    page.append(h("div", { class: "lesson-head" },
+      h("div", { class: "eyebrow" }, `Case drill ${idx + 1} · about ${c.minutes} min`),
+      h("h1", {}, c.title)));
+    const collected = [];
+    renderBlocks(c.blocks, body, collected);
+    page.append(body, copyPanel(`CASE ${idx + 1}: ${c.title}`, collected,
+      "Copy your structure, queries and recommendation, and send them. I'll review it the way a hiring manager would."));
+    const next = COURSE.cases[idx + 1];
+    page.append(h("div", { class: "lesson-nav" }, h("a", { class: "btn", href: "#/cases" }, "← All cases"), h("span"),
+      next ? h("a", { class: "btn btn-primary", href: `#/case/${next.id}` }, next.title, " →") : h("span")));
+    return page;
+  }
+
+  function pagePrep(id) {
+    const r = COURSE.prep.find((x) => x.id === id);
+    if (!r) return notFound();
+    const page = h("div", { class: "page" });
+    const body = h("div", { class: "prose" });
+    page.append(h("div", { class: "lesson-head" }, h("div", { class: "eyebrow" }, "Interview prep"), h("h1", {}, r.title),
+      r.summary ? h("p", { class: "summary" }, r.summary) : null));
+    const collected = [];
+    renderBlocks(r.blocks, body, collected);
+    page.append(body);
+    if (collected.length) page.append(copyPanel(r.title.toUpperCase(), collected, "Copy what you wrote and send it for review."));
+    return page;
+  }
+
+  function pageReview() {
+    const page = h("div", { class: "page prose" });
+    page.append(h("div", { class: "lesson-head" }, h("div", { class: "eyebrow" }, "Credit analytics"), h("h1", {}, "Review"),
+      h("p", { class: "summary" }, "Short, spaced recall of earlier chapters. Cards join the deck when you open a chapter and come back after 1, 3, 7, 14 and 30 days; a miss sends a card back to the start.")));
+    const stage = h("div");
+    page.append(stage);
+    const deck = (Store.state.deck ||= {});
+    const startSession = (cards, scheduled) => {
+      const queue = [...cards];
+      let shown = 0, right = 0;
+      const missedOnce = new Set();
+      const next = () => {
+        if (!queue.length) {
+          stage.replaceChildren(h("div", { class: "feedback good" }, h("strong", {}, "Done. "),
+            `${right} of ${shown} recalled first time.`, scheduled ? " Come back tomorrow for the next due cards." : ""),
+          h("p", {}, h("a", { class: "btn", href: "#/credit" }, "Back to the overview")));
+          refreshNav();
+          return;
+        }
+        const c = queue.shift();
+        const answer = h("div", { class: "flashcard-a", style: "display:none" }, ...md(c.a).childNodes);
+        const grade = (ok) => {
+          if (!missedOnce.has(c.id)) { shown++; if (ok) right++; }
+          if (scheduled && !missedOnce.has(c.id)) {
+            const st = deck[c.id] || { box: 0 };
+            const box = ok ? Math.min(st.box + 1, REVIEW_DAYS.length - 1) : 0;
+            deck[c.id] = { box, due: localDay(ok ? REVIEW_DAYS[box] : 1) };
+            Store.save();
+          }
+          if (!ok) { missedOnce.add(c.id); queue.push(c); }
+          next();
+        };
+        const buttons = h("div", { class: "runner-bar", style: "display:none" },
+          h("button", { class: "btn btn-good", onclick: () => grade(true) }, "I knew it"),
+          h("button", { class: "btn", onclick: () => grade(false) }, "Not quite"));
+        stage.replaceChildren(h("div", { class: "card review-card" },
+          h("div", { class: "card-head" }, h("span", { class: "badge explain" }, `Chapter ${c.n}`), h("span", { class: "card-id" }, `${queue.length} left`)),
+          h("div", { class: "card-body" },
+            h("div", { class: "review-q" }, ...md(c.q).childNodes),
+            h("p", { class: "small muted" }, "Answer out loud first."),
+            h("button", { class: "btn btn-primary", onclick: (e) => { answer.style.display = ""; buttons.style.display = ""; e.target.remove(); } }, "Show answer"),
+            answer, buttons)));
+      };
+      next();
+    };
+    const due = dueCards();
+    const enrolled = allCards().filter((c) => deck[c.id]);
+    const byChapter = COURSE.credit.filter((ch) => enrolled.some((c) => c.chapter === ch));
+    stage.append(
+      h("p", {}, due.length ? `${due.length} card${due.length === 1 ? "" : "s"} due today.` :
+        enrolled.length ? "Nothing due today. Practising a chapter below doesn't change its schedule." : "No cards yet: open a chapter to add its cards."),
+      due.length ? h("p", {}, h("button", { class: "btn btn-primary", onclick: () => startSession(due.sort(() => Math.random() - 0.5), true) }, "Start review")) : null,
+      byChapter.length ? h("h2", {}, "Practise a chapter") : null,
+      ...byChapter.map((ch) => h("p", {}, h("button", { class: "btn", onclick: () => startSession(enrolled.filter((c) => c.chapter === ch), false) },
+        `${COURSE.credit.indexOf(ch) + 1}. ${ch.title}`))));
+    return page;
+  }
+
+  async function downloadTable(t) {
+    try {
+      await DB.ready;
+      await DB.serial(() => DB.conn.query(`COPY ${t} TO '${t}.csv' (HEADER, DELIMITER ',')`));
+      const buf = await DB.db.copyFileToBuffer(`${t}.csv`);
+      const a = h("a", { href: URL.createObjectURL(new Blob([buf], { type: "text/csv" })), download: `${t}.csv` });
+      document.body.append(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      alert("Couldn't export: " + (e.message || e));
+    }
   }
 
   function pageProblems() {
@@ -1046,6 +1480,9 @@
         h("button", { class: "btn", onclick: exportProgress }, "Export progress"), " ",
         h("label", { class: "btn" }, "Import progress", h("input", { type: "file", accept: ".json", style: "display:none", onchange: importProgress })), " ",
         h("button", { class: "btn btn-ghost", onclick: () => { if (confirm("Erase all progress in this browser?")) { localStorage.removeItem(STORE_KEY); location.reload(); } } }, "Reset everything")),
+      h("h2", {}, "Download the data"),
+      h("p", {}, "Each table as a CSV file, for working in R or another tool (e.g. the mock take-home)."),
+      h("p", {}, ...TABLES.flatMap((t) => [h("button", { class: "btn", onclick: () => downloadTable(t) }, t), " "])),
       h("h2", {}, "Database"),
       h("p", {}, "If you changed or dropped a table while experimenting, reload the original data."),
       h("p", {}, h("button", { class: "btn", onclick: async () => { await DB.reset(); toast("Data reloaded"); } }, "Reload data")));
@@ -1107,6 +1544,13 @@
         })()) : null,
         link("#/problems", "Problem bank", h("span", { class: "nav-meta" }, `${solvedP}/${COURSE.problems.length}`)),
         link("#/mock", Store.state.activeMock ? "Mock screen (in progress)" : "Mock screen")),
+      COURSE.credit.length ? sec("Credit analytics",
+        link("#/credit", "Overview"),
+        ...COURSE.credit.map((c, i) => link(`#/credit/${c.id}`, [h("span", { class: "nav-num" }, String(i + 1)), c.title],
+          chapterDone(c) ? h("span", { class: "nav-check" }, "✓") : h("span", { class: "nav-meta" }, `${c.minutes}m`))),
+        link("#/review", "Review", (() => { const n = dueCards().length; return n ? h("span", { class: "nav-due" }, `${n} due`) : null; })()),
+        COURSE.cases.length ? link("#/cases", "Case drills", h("span", { class: "nav-meta" }, String(COURSE.cases.length))) : null,
+        ...COURSE.prep.filter((r) => r.id !== "00-credit-start").map((r) => link(`#/prep/${r.id}`, r.title))) : null,
       sec("Reference", ...refs.map((r) => link(`#/ref/${r.id}`, r.title))),
       sec("You", link("#/progress", "Progress & backup")));
   }
@@ -1118,6 +1562,8 @@
     loans: "one row per loan",
     installments: "one row per scheduled payment (loan_id + installment_number)",
     payments: "one row per payment attempt (supposedly)",
+    loan_month: "one row per loan per month-end while open (loan_id + as_of_date)",
+    merchant_terms: "one row per merchant: illustrative fee rates",
   };
 
   async function renderSchema() {
@@ -1132,7 +1578,7 @@
         h("h3", {}, t, h("span", { class: "muted small", style: "font-weight:400" }, `  ${fmtInt(n)} rows`)),
         h("div", { class: "grain" }, SCHEMA_NOTES[t]),
         h("table", { class: "schema-cols" }, cols.map((c) => h("tr", {},
-          h("td", { class: /_id$|installment_number/.test(c.column_name) ? "key" : "" }, c.column_name),
+          h("td", { class: /_id$|installment_number|as_of_date/.test(c.column_name) ? "key" : "" }, c.column_name),
           h("td", {}, c.column_type.toLowerCase()))))));
     }
     el.replaceChildren(...parts);
@@ -1150,6 +1596,11 @@
     else if (kind === "lesson") page = pageLesson(id);
     else if (kind === "drill") page = pageDrill(id);
     else if (kind === "daily") page = pageDaily(id);
+    else if (kind === "credit") page = id ? pageChapter(id) : pageCreditHome();
+    else if (kind === "case") page = pageCase(id);
+    else if (kind === "cases") page = pageCases();
+    else if (kind === "prep") page = pagePrep(id);
+    else if (kind === "review") page = pageReview();
     else if (kind === "problems") page = pageProblems();
     else if (kind === "problem") page = pageProblem(id);
     else if (kind === "mock") page = pageMock();
@@ -1163,7 +1614,7 @@
   }
 
   function boot() {
-    if (COURSE) { COURSE.drills ||= []; COURSE.daily ||= []; }
+    if (COURSE) { COURSE.drills ||= []; COURSE.daily ||= []; COURSE.credit ||= []; COURSE.cases ||= []; COURSE.prep ||= []; }
     if (!COURSE || !window.COURSE_DATA) {
       document.body.innerHTML = "<p style='padding:2em'>Course files are missing (app/content.js, app/data.js).</p>";
       return;
