@@ -629,13 +629,36 @@
   }
 
   /* collect (optional) gathers handles for the "copy my answers" summary. */
-  function renderBlocks(blocks, container, collect) {
+  // optionalSql: credit chapters and cases tuck SQL away (the live rounds have no SQL); the insight stays one tap away.
+  function optionalSqlWrap(inner, b) {
+    const box = h("details", { class: "optional-sql" },
+      h("summary", {}, h("span", { class: "badge" }, "Optional SQL"), " Take-home practice, about 15 min"));
+    const st = b ? Store.item(b.id) : {};
+    if ((st.status && st.status !== "new") || (st.draft || "").trim()) box.open = true;
+    if (b && b.solution) {
+      const out = h("div");
+      const btn = h("button", { class: "btn", onclick: async () => {
+        btn.disabled = true;
+        try {
+          const res = await DB.run(b.solution);
+          out.replaceChildren(resultTable(res), ...(b.explain ? md(b.explain).childNodes : []));
+        } catch (e) { out.textContent = "Couldn't run it: " + (e.message || e); }
+        btn.remove();
+      } }, "Skip the SQL: show the result and what it means");
+      const lead = h("div", { class: "optional-skip" }, btn, out);
+      return h("div", {}, lead, (box.append(inner), box));
+    }
+    box.append(inner);
+    return box;
+  }
+
+  function renderBlocks(blocks, container, collect, { optionalSql = false } = {}) {
     for (const b of blocks) {
       if (b.type === "md") container.append(...md(b.text).childNodes);
       else if (b.type === "exercise") {
         const c = exerciseCard(b);
-        container.append(c.el);
-        if (collect) collect.push({ kind: "exercise", item: b, getText: c.getSql });
+        container.append(optionalSql ? optionalSqlWrap(c.el, b) : c.el);
+        if (collect) collect.push({ kind: "exercise", item: b, getText: c.getSql, optional: optionalSql });
       } else if (b.type === "predict") {
         container.append(predictCard(b));
         if (collect) collect.push({ kind: "predict", item: b });
@@ -646,8 +669,8 @@
         if (collect) collect.push({ kind: "explain", item: b, getText: c.getText });
       } else if (b.type === "scratch") {
         const c = scratchCard(b);
-        container.append(c.el);
-        if (collect) collect.push({ kind: "scratch", item: b, getText: c.getSql });
+        container.append(optionalSql ? optionalSqlWrap(c.el, b) : c.el);
+        if (collect) collect.push({ kind: "scratch", item: b, getText: c.getSql, optional: optionalSql });
       } else if (b.type === "cards") container.append(cardsBlock(b));
       else container.append(callout(b.type, b.title, b.text));
     }
@@ -1041,8 +1064,12 @@
 
   function answersSummary(title, collected) {
     const lines = [title, `Copied ${new Date().toLocaleString()}`, ""];
-    collected.forEach(({ kind, item, getText }, i) => {
+    collected.forEach(({ kind, item, getText, optional }, i) => {
       const st = Store.item(item.id);
+      if (optional && !(st.status && st.status !== "new") && !(st.draft || "").trim()) {
+        lines.push(`[${i + 1}] ${item.id}: optional SQL, skipped`, "");
+        return;
+      }
       if (kind === "predict") {
         const ans = st.answer != null ? item.options[st.answer] : null;
         lines.push(`[${i + 1}] ${item.id} (predict): ${ans ? (ans.correct ? "right" : "wrong") + (st.firstTry === false ? ", not first try" : "") : "not answered"}`, "");
@@ -1118,7 +1145,7 @@
       h("h1", {}, c.title),
       c.summary ? h("p", { class: "summary" }, c.summary) : null));
     const collected = [];
-    renderBlocks(c.blocks, body, collected);
+    renderBlocks(c.blocks, body, collected, { optionalSql: true });
     page.append(body);
     if (collected.length) page.append(copyPanel(`CHAPTER ${idx + 1}: ${c.title}`, collected,
       "When you've finished the chapter, copy your answers (SQL, predictions and written answers) and send them. I'll review the reasoning, not just the results."));
@@ -1167,7 +1194,7 @@
       h("div", { class: "eyebrow" }, `Case drill ${idx + 1} · about ${c.minutes} min`),
       h("h1", {}, c.title)));
     const collected = [];
-    renderBlocks(c.blocks, body, collected);
+    renderBlocks(c.blocks, body, collected, { optionalSql: true });
     page.append(body, copyPanel(`CASE ${idx + 1}: ${c.title}`, collected,
       "Copy your structure, queries and recommendation, and send them. I'll review it the way a hiring manager would."));
     const next = COURSE.cases[idx + 1];
