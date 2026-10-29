@@ -394,3 +394,16 @@ details.clarify summary { cursor: pointer; font-weight: 600; color: var(--interv
 .optional-sql[open] > summary { margin-bottom: 10px; }
 .optional-skip { margin: 8px 0; }
 .optional-skip table.result { margin: 8px 0; }
+
+/* R track */
+.r-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 18px; }
+.r-status { font-size: 0.9em; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); }
+.r-status.busy::before { content: "⏳ "; }
+.r-status.ready { color: var(--good); border-color: var(--good); }
+.r-status.ready::before { content: "● "; }
+.r-status.error { color: var(--bad); border-color: var(--bad); }
+.r-output { margin-top: 8px; }
+.r-console { font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 12.5px; line-height: 1.4; white-space: pre; overflow-x: auto; background: var(--code-bg, rgba(127,127,127,0.08)); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; max-height: 520px; overflow-y: auto; }
+.r-console .r-err { color: var(--muted); }
+.r-console.r-error { color: var(--bad); white-space: pre-wrap; }
+.r-plot { width: 100%; max-width: 760px; height: auto; display: block; border-radius: 8px; background: #fff; margin-bottom: 8px; }

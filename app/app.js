@@ -10,6 +10,8 @@
   const DUCKDB_URL = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
   const TABLES = ["merchants", "borrowers", "applications", "loans", "installments", "payments", "loan_month", "merchant_terms"];
   const STORE_KEY = "sqlprep.v1";
+  // SQL track is paused: its pages stay reachable by URL but leave the menu.
+  const SHOW_SQL = false;
   const MAX_ROWS_SHOWN = 200;
   const COURSE = window.COURSE;
 
@@ -298,6 +300,8 @@
       const text = code.textContent.replace(/\n$/, "");
       if (lang === "sql") {
         pre.replaceWith(runner({ sql: text }).el);
+      } else if (lang === "webr") {
+        pre.replaceWith(rRunner({ code: text }).el);
       } else {
         const out = h("pre", { class: "static" });
         const mode = lang === "r" ? "r" : lang === "sqlstatic" ? "text/x-sql" : null;
@@ -335,10 +339,10 @@
     return String(Number(s));
   }
 
-  function editor(host, value, onRun, onCheck) {
+  function editor(host, value, onRun, onCheck, mode = "text/x-sql") {
     const cm = CodeMirror(host, {
       value,
-      mode: "text/x-sql",
+      mode,
       lineNumbers: true,
       matchBrackets: true,
       indentUnit: 2,
@@ -671,6 +675,12 @@
         const c = scratchCard(b);
         container.append(optionalSql ? optionalSqlWrap(c.el, b) : c.el);
         if (collect) collect.push({ kind: "scratch", item: b, getText: c.getSql, optional: optionalSql });
+      } else if (b.type === "rexercise") {
+        const c = rExerciseCard(b);
+        container.append(c.el);
+        if (collect) collect.push({ kind: "exercise", item: b, getText: c.getSql });
+      } else if (b.type === "rsetup") {
+        /* runs silently when the page opens */
       } else if (b.type === "cards") container.append(cardsBlock(b));
       else container.append(callout(b.type, b.title, b.text));
     }
@@ -1569,7 +1579,12 @@
     const sec = (title, ...links) => h("div", { class: "nav-section" }, h("div", { class: "nav-head" }, title), ...links);
     const refs = COURSE.reference.filter((r) => r.id !== "00-start-here");
     const solvedP = COURSE.problems.filter((p) => Store.solved(p.id)).length;
-    nav.replaceChildren(
+    const rMods = COURSE.r.filter((m) => m.id !== "00-r-start");
+    const rSec = rMods.length ? sec("R for credit analytics",
+      link(SHOW_SQL ? "#/r" : "#/", "Overview"),
+      ...rMods.map((m, i) => link(`#/r/${m.id}`, [h("span", { class: "nav-num" }, String(i + 1)), m.title],
+        Store.state.lessons["r:" + m.id] ? h("span", { class: "nav-check" }, "✓") : h("span", { class: "nav-meta" }, `${m.minutes}m`)))) : null;
+    const sqlSecs = SHOW_SQL ? [
       sec("Course", link("#/", "Start here")),
       sec("Lessons", ...COURSE.lessons.map((l, i) => link(`#/lesson/${l.id}`,
         [h("span", { class: "nav-num" }, String(i)), l.title],
@@ -1586,7 +1601,10 @@
           return h("span", { class: done === items.length ? "nav-check" : "nav-meta" }, done === items.length ? "✓" : `${done}/${items.length}`);
         })()) : null,
         link("#/problems", "Problem bank", h("span", { class: "nav-meta" }, `${solvedP}/${COURSE.problems.length}`)),
-        link("#/mock", Store.state.activeMock ? "Mock screen (in progress)" : "Mock screen")),
+        link("#/mock", Store.state.activeMock ? "Mock screen (in progress)" : "Mock screen"))] : [];
+    nav.replaceChildren(
+      rSec,
+      ...sqlSecs,
       COURSE.credit.length ? sec("Credit analytics",
         link("#/credit", "Overview"),
         ...COURSE.credit.map((c, i) => link(`#/credit/${c.id}`, [h("span", { class: "nav-num" }, String(i + 1)), c.title],
@@ -1594,7 +1612,7 @@
         link("#/review", "Review", (() => { const n = dueCards().length; return n ? h("span", { class: "nav-due" }, `${n} due`) : null; })()),
         COURSE.cases.length ? link("#/cases", "Case drills", h("span", { class: "nav-meta" }, String(COURSE.cases.length))) : null,
         ...COURSE.prep.filter((r) => r.id !== "00-credit-start").map((r) => link(`#/prep/${r.id}`, r.title))) : null,
-      sec("Reference", ...refs.map((r) => link(`#/ref/${r.id}`, r.title))),
+      sec("Reference", ...refs.filter((r) => SHOW_SQL || r.id === "01-the-data").map((r) => link(`#/ref/${r.id}`, r.title))),
       sec("You", link("#/progress", "Progress & backup")));
   }
 
@@ -1627,6 +1645,307 @@
     el.replaceChildren(...parts);
   }
 
+
+  /* ------------------------------------------------------------------ */
+  /* R track: R (webR) running in the browser                            */
+  /* ------------------------------------------------------------------ */
+
+  const WEBR_URL = "https://webr.r-wasm.org/v0.6.0/webr.mjs";
+  const R_PACKAGES = ["dplyr", "tidyr", "ggplot2", "skimr", "janitor", "lubridate", "stringr", "forcats", "readr", "scales", "purrr", "tibble", "nanoparquet"];
+  const R_PRELUDE = `
+options(width = 80, tibble.print_max = 15, tibble.print_min = 10, pillar.min_title_chars = 8,
+        cli.num_colors = 1, crayon.enabled = FALSE, warn = 1, dplyr.summarise.inform = FALSE)
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(ggplot2); library(stringr); library(lubridate)
+  library(janitor); library(skimr); library(forcats); library(readr); library(scales); library(purrr)
+})
+theme_set(theme_minimal(base_size = 13))
+.__tables <- c(${TABLES.map((t) => `"${t}"`).join(", ")})
+.__load_tables <- function() {
+  for (t in .__tables) assign(t, tibble::as_tibble(nanoparquet::read_parquet(file.path("/home/web_user/data", paste0(t, ".parquet")))), envir = globalenv())
+}
+.__load_tables()
+.__norm <- function(x, ordered) {
+  if (is.data.frame(x)) {
+    x <- as.data.frame(x)
+    x[] <- lapply(x, function(col) if (is.factor(col)) as.character(col) else col)
+    if (!ordered && nrow(x) > 0) x <- x[do.call(order, unname(as.list(x))), , drop = FALSE]
+    rownames(x) <- NULL
+    x
+  } else if (is.factor(x)) as.character(x) else x
+}
+.__check <- function(got, want, ordered = FALSE, tol = 1e-6) {
+  if (is.data.frame(want)) {
+    if (!is.data.frame(got)) return("Your code's last value isn't a data frame. End with the table you want checked.")
+    miss <- setdiff(names(want), names(got)); extra <- setdiff(names(got), names(want))
+    if (length(miss) || length(extra)) return(paste0("Columns don't match.",
+      if (length(miss)) paste0(" Missing: ", paste(miss, collapse = ", "), "."),
+      if (length(extra)) paste0(" Not expected: ", paste(extra, collapse = ", "), ".")))
+    got <- got[names(want)]
+    if (nrow(got) != nrow(want)) return(sprintf("Expected %d rows; your result has %d.", nrow(want), nrow(got)))
+  } else if (length(got) != length(want)) {
+    return(sprintf("Expected a value of length %d; yours has length %d.", length(want), length(got)))
+  }
+  r <- all.equal(.__norm(got, ordered), .__norm(want, ordered), tolerance = tol, check.attributes = FALSE)
+  if (isTRUE(r)) "OK" else paste0("The values differ: ", paste(utils::head(r, 3), collapse = "; "))
+}
+`;
+  const RX = { ready: null, webR: null, shelter: null, status: "R hasn't started yet", listeners: new Set(), queue: Promise.resolve(), setups: new Set() };
+  function rStatus(s) { RX.status = s; RX.listeners.forEach((f) => f(s)); }
+
+  function startR() {
+    if (RX.ready) return RX.ready;
+    RX.ready = (async () => {
+      const t0 = performance.now();
+      rStatus("Starting R in your browser…");
+      const { WebR, ChannelType } = await import(WEBR_URL);
+      const webR = new WebR({ channelType: ChannelType.PostMessage });
+      await webR.init();
+      rStatus("Installing packages (tidyverse, skimr, janitor)…");
+      await webR.installPackages(R_PACKAGES, { quiet: true });
+      rStatus("Loading the lending data…");
+      await webR.FS.mkdir("/home/web_user/data");
+      for (const t of TABLES) {
+        const bin = atob(window.COURSE_DATA[t]);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        await webR.FS.writeFile(`/home/web_user/data/${t}.parquet`, bytes);
+      }
+      await webR.evalRVoid(R_PRELUDE);
+      RX.webR = webR;
+      RX.shelter = await new webR.Shelter();
+      rStatus(`ready|R is ready (${Math.round((performance.now() - t0) / 1000)} s)`);
+    })();
+    RX.ready.catch((e) => { RX.ready = null; rStatus("error|R didn't start: " + (e.message || e) + ". Check your connection and reload."); });
+    return RX.ready;
+  }
+
+  // Serialise everything that touches R.
+  function rJob(fn) {
+    const job = RX.queue.then(async () => { await startR(); return fn(); });
+    RX.queue = job.catch(() => {});
+    return job;
+  }
+
+  function rRun(code) {
+    return rJob(async () => {
+      const t0 = performance.now();
+      try {
+        const r = await RX.shelter.captureR(code, {
+          withAutoprint: true, captureStreams: true, captureConditions: false,
+          captureGraphics: { width: 760, height: 456 }, env: RX.webR.objs.globalEnv,
+        });
+        return { output: r.output, images: r.images, result: r.result, ms: performance.now() - t0 };
+      } catch (e) {
+        return { error: String(e.message || e), output: [], images: [], ms: performance.now() - t0 };
+      }
+    });
+  }
+
+  async function rRunSilently(code) {
+    const res = await rRun(code);
+    await rJob(() => RX.shelter.purge());
+    if (res.error) throw new Error(res.error);
+  }
+
+  async function rResetSession() {
+    await rJob(() => RX.webR.evalRVoid("rm(list = ls(envir = globalenv()), envir = globalenv()); .__load_tables()"));
+    RX.setups.clear();
+  }
+
+  async function rRunSetups(blocks, pageId) {
+    const setups = blocks.filter((b) => b.type === "rsetup");
+    for (const [i, b] of setups.entries()) {
+      const key = `${pageId}:${i}`;
+      if (RX.setups.has(key)) continue;
+      try { await rRunSilently(b.code); RX.setups.add(key); }
+      catch (e) { toast("Page setup failed: " + e.message); }
+    }
+  }
+
+  function rStatusBar() {
+    const el = h("div", { class: "r-status" });
+    const show = (s) => {
+      const [state, msg] = s.includes("|") ? s.split("|") : ["busy", s];
+      el.className = "r-status " + state;
+      el.textContent = msg;
+    };
+    show(RX.status);
+    RX.listeners.add(show);
+    return el;
+  }
+
+  function rOutput(res) {
+    const out = h("div", { class: "r-output" });
+    const text = res.output.map((o) => ({ type: o.type, data: o.data }));
+    if (text.length) {
+      const pre = h("pre", { class: "r-console" });
+      for (const o of text) pre.append(h("span", { class: o.type === "stderr" ? "r-err" : "" }, o.data + "\n"));
+      out.append(pre);
+    }
+    for (const im of res.images) {
+      const c = h("canvas", { class: "r-plot" });
+      c.width = im.width; c.height = im.height;
+      c.getContext("2d").drawImage(im, 0, 0);
+      out.append(c);
+    }
+    if (res.error) out.append(h("pre", { class: "r-console r-error" }, res.error));
+    if (!text.length && !res.images.length && !res.error) out.append(h("div", { class: "small muted" }, "Ran without printing anything (assignments don't print; type the object's name to see it)."));
+    return out;
+  }
+
+  function rRunner({ code, onCheck, onChange, extraButtons = [], checkLabel }) {
+    const host = h("div");
+    const result = h("div", { class: "result-wrap" });
+    const meta = h("span", { class: "meta" });
+    let cm;
+    const doRun = async () => {
+      runBtn.disabled = true;
+      meta.textContent = RX.status.startsWith("ready") ? "running…" : "waiting for R…";
+      const res = await rRun(cm.getValue());
+      result.replaceChildren(rOutput(res));
+      await rJob(() => RX.shelter.purge());
+      meta.textContent = `${(res.ms / 1000).toFixed(1)} s`;
+      runBtn.disabled = false;
+      return res;
+    };
+    const runBtn = h("button", { class: "btn btn-primary", onclick: doRun, title: "Ctrl+Enter" }, "Run ", h("span", { class: "kbd" }, "Ctrl+↵"));
+    const resetBtn = h("button", { class: "btn btn-ghost", onclick: () => cm.setValue(code), title: "Restore the original code" }, "Reset");
+    const checkBtn = onCheck ? h("button", { class: "btn btn-good", onclick: () => onCheck(cm.getValue()) }, checkLabel || "Check answer") : null;
+    const bar = h("div", { class: "runner-bar" }, runBtn, checkBtn, ...extraButtons, h("span", { class: "spacer" }), meta, resetBtn);
+    const el = h("div", { class: "runner r-runner" }, host, bar, result);
+    cm = editor(host, code, doRun, onCheck ? () => onCheck(cm.getValue()) : null, "r");
+    if (onChange) cm.on("change", () => onChange(cm.getValue()));
+    requestAnimationFrame(() => cm.refresh());
+    startR();
+    return { el, cm, run: doRun, setResult: (node) => result.replaceChildren(node), resetBtn };
+  }
+
+  function rExerciseCard(item) {
+    const st = Store.item(item.id);
+    const card = h("div", { class: "card" + (st.status === "solved" ? " solved" : "") });
+    const badge = h("span", { class: "badge " + (st.status === "solved" ? "done" : "write") }, st.status === "solved" ? "Solved" : "R");
+    card.append(h("div", { class: "card-head" }, badge, h("span", { class: "card-id" }, item.id)));
+    const body = h("div", { class: "card-body" });
+    const feedback = h("div", { class: "feedback" });
+    const hintsBox = h("div");
+    const revealBox = h("div", { class: "reveal" });
+    body.append(md(item.prompt));
+    let hintsShown = 0;
+    const hintBtn = h("button", { class: "btn btn-ghost", onclick: () => {
+      if (hintsShown >= item.hints.length) return;
+      hintsBox.append(h("div", { class: "hint" }, ...md(item.hints[hintsShown]).childNodes));
+      hintsShown++;
+      Store.update(item.id, { hints: Math.max(Store.item(item.id).hints, hintsShown) });
+      upd();
+    } }, "Hint");
+    const upd = () => { hintBtn.textContent = item.hints.length ? `Hint ${Math.min(hintsShown + 1, item.hints.length)}/${item.hints.length}` : "No hints"; hintBtn.disabled = hintsShown >= item.hints.length; };
+    upd();
+    const solBtn = h("button", { class: "btn btn-ghost", onclick: () => reveal(true) }, "Solution");
+    let saveT;
+    const r = rRunner({
+      code: st.draft != null ? st.draft : item.starter || "",
+      onCheck: (code) => check(code),
+      onChange: (v) => { clearTimeout(saveT); saveT = setTimeout(() => Store.update(item.id, { draft: v }), 400); },
+      extraButtons: [hintBtn, solBtn],
+    });
+    r.resetBtn.onclick = () => r.cm.setValue(item.starter || "");
+    body.append(r.el, feedback, hintsBox, revealBox);
+    card.append(body);
+
+    async function check(code) {
+      feedback.className = "feedback info";
+      feedback.textContent = "Checking…";
+      const res = await rRun(code);
+      r.setResult(rOutput(res));
+      let verdict;
+      if (res.error) verdict = "Your code stopped with an error (shown above).";
+      else {
+        verdict = await rJob(async () => {
+          await RX.webR.objs.globalEnv.bind(".__got", res.result);
+          const v = await RX.webR.evalRString(`.__check(.__got, local({\n${item.solution}\n}), ordered = ${item.ordered ? "TRUE" : "FALSE"})`);
+          await RX.webR.evalRVoid("rm(.__got)");
+          return v;
+        }).catch((e) => "Couldn't check: " + (e.message || e));
+      }
+      await rJob(() => RX.shelter.purge());
+      const ok = verdict === "OK";
+      const was = Store.solved(item.id);
+      Store.update(item.id, { attempts: Store.item(item.id).attempts + 1, status: ok || was ? "solved" : "attempted", lastResult: ok ? "correct" : verdict });
+      feedback.className = "feedback " + (ok ? "good" : "bad");
+      feedback.replaceChildren(ok ? h("span", {}, h("strong", {}, "Correct."), " Compare with the reference solution below.") : h("span", {}, h("strong", {}, "Not yet. "), verdict));
+      if (ok) { card.classList.add("solved"); badge.className = "badge done"; badge.textContent = "Solved"; reveal(false); refreshNav(); }
+    }
+    function reveal(confirmFirst) {
+      if (revealBox.childElementCount) return;
+      if (confirmFirst && !Store.solved(item.id) && !confirm("Show the solution? Try a hint first: struggling a little is where the learning happens.")) return;
+      if (confirmFirst) Store.update(item.id, { revealed: true });
+      revealBox.append(h("div", { class: "reveal-title" }, "Reference solution"));
+      const sol = h("div", { class: "prose" });
+      sol.innerHTML = "<pre><code class='language-r'></code></pre>";
+      $("code", sol).textContent = item.solution;
+      enhanceCode(sol);
+      revealBox.append(sol);
+      if (item.explain) { revealBox.append(h("div", { class: "reveal-title" }, "Why it works")); revealBox.append(md(item.explain)); }
+    }
+    if (st.status === "solved") reveal(false);
+    return { el: card, getSql: () => r.cm.getValue() };
+  }
+
+  function rPageHeader() {
+    const resetBtn = h("button", { class: "btn btn-ghost", onclick: async () => {
+      if (!confirm("Clear everything you've created in R on this visit and reload the original tables?")) return;
+      await rResetSession(); toast("R session reset"); route();
+    } }, "Reset R session");
+    return h("div", { class: "r-head" }, rStatusBar(), resetBtn);
+  }
+
+  function pageRHome() {
+    const page = h("div", { class: "page prose" });
+    const intro = COURSE.r.find((x) => x.id === "00-r-start");
+    page.append(h("div", { class: "lesson-head" }, h("div", { class: "eyebrow" }, "R for credit analytics"),
+      h("h1", {}, intro ? intro.title : "R for credit analytics"), intro && intro.summary ? h("p", { class: "summary" }, intro.summary) : null));
+    page.append(rPageHeader());
+    if (intro) { renderBlocks(intro.blocks, page); rRunSetups(intro.blocks, intro.id); }
+    const t = h("table", { class: "plist" });
+    COURSE.r.filter((m) => m.id !== "00-r-start").forEach((m, i) => t.append(h("tr", {},
+      h("td", { class: "status" }, Store.state.lessons["r:" + m.id] ? "✓" : ""),
+      h("td", {}, h("a", { href: `#/r/${m.id}` }, `${i + 1}. ${m.title}`)),
+      h("td", { class: "muted small" }, `${m.minutes} min`))));
+    page.append(h("h2", {}, "Modules"), t);
+    return page;
+  }
+
+  function pageRModule(id) {
+    const mods = COURSE.r.filter((m) => m.id !== "00-r-start");
+    const idx = mods.findIndex((m) => m.id === id);
+    const m = mods[idx];
+    if (!m) return notFound();
+    Store.state.last = location.hash;
+    const page = h("div", { class: "page" });
+    const body = h("div", { class: "prose" });
+    page.append(h("div", { class: "lesson-head" },
+      h("div", { class: "eyebrow" }, `R for credit analytics · Module ${idx + 1} · about ${m.minutes} min`),
+      h("h1", {}, m.title), m.summary ? h("p", { class: "summary" }, m.summary) : null), rPageHeader());
+    const collected = [];
+    renderBlocks(m.blocks, body, collected);
+    rRunSetups(m.blocks, m.id);
+    page.append(body);
+    if (collected.length) page.append(copyPanel(`R MODULE ${idx + 1}: ${m.title}`, collected,
+      "When you've finished, copy your answers and send them. I'll review your R, not just whether it passed."));
+    const key = "r:" + m.id;
+    const doneBtn = h("button", { class: "btn " + (Store.state.lessons[key] ? "btn-good" : ""), onclick: () => {
+      Store.state.lessons[key] = !Store.state.lessons[key]; Store.save();
+      doneBtn.className = "btn " + (Store.state.lessons[key] ? "btn-good" : "");
+      doneBtn.textContent = Store.state.lessons[key] ? "✓ Module complete" : "Mark module complete"; refreshNav();
+    } }, Store.state.lessons[key] ? "✓ Module complete" : "Mark module complete");
+    const prev = mods[idx - 1], next = mods[idx + 1];
+    page.append(h("div", { class: "lesson-nav" },
+      prev ? h("a", { class: "btn", href: `#/r/${prev.id}` }, "← ", prev.title) : h("a", { class: "btn", href: "#/r" }, "← Overview"),
+      doneBtn, next ? h("a", { class: "btn btn-primary", href: `#/r/${next.id}` }, next.title, " →") : h("span")));
+    return page;
+  }
+
   /* ------------------------------------------------------------------ */
   /* router                                                              */
   /* ------------------------------------------------------------------ */
@@ -1635,7 +1954,9 @@
     clearInterval(mockTimer);
     const [, kind, id] = (location.hash || "#/").split("/");
     let page;
-    if (!kind) page = pageHome();
+    if (!kind) page = SHOW_SQL ? pageHome() : pageRHome();
+    else if (kind === "r") page = id ? pageRModule(id) : pageRHome();
+    else if (kind === "sql") page = pageHome();
     else if (kind === "lesson") page = pageLesson(id);
     else if (kind === "drill") page = pageDrill(id);
     else if (kind === "daily") page = pageDaily(id);
@@ -1657,7 +1978,7 @@
   }
 
   function boot() {
-    if (COURSE) { COURSE.drills ||= []; COURSE.daily ||= []; COURSE.credit ||= []; COURSE.cases ||= []; COURSE.prep ||= []; }
+    if (COURSE) { COURSE.r ||= []; COURSE.drills ||= []; COURSE.daily ||= []; COURSE.credit ||= []; COURSE.cases ||= []; COURSE.prep ||= []; }
     if (!COURSE || !window.COURSE_DATA) {
       document.body.innerHTML = "<p style='padding:2em'>Course files are missing (app/content.js, app/data.js).</p>";
       return;
