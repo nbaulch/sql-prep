@@ -1093,7 +1093,7 @@
       } else {
         lines.push(`[${i + 1}] ${item.id}: ${st.status === "solved" ? "SOLVED" : st.status === "attempted" ? "NOT SOLVED" : "NOT ATTEMPTED"}` +
           ` · ${st.attempts || 0} checks · ${st.hints || 0} hints` + (st.revealed ? " · solution revealed" : ""),
-          `Last check: ${st.lastResult || "never checked"}`, "```sql", text || "-- (empty)", "```", "");
+          `Last check: ${st.lastResult || "never checked"}`, item.type === "rexercise" ? "```r" : "```sql", text || (item.type === "rexercise" ? "# (empty)" : "-- (empty)"), "```", "");
       }
     });
     return lines.join("\n");
